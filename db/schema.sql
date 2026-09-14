@@ -405,3 +405,29 @@ CREATE TABLE IF NOT EXISTS notifications (
     INDEX idx_created_at (created_at),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+
+CREATE TABLE IF NOT EXISTS payu_transactions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  payment_id INT NOT NULL,
+  order_id INT NOT NULL,
+  user_id INT NOT NULL,
+  txnid VARCHAR(100) NOT NULL UNIQUE,
+  mihpayid VARCHAR(100) NULL,
+  amount DECIMAL(10,2) NOT NULL,
+  currency VARCHAR(10) DEFAULT 'INR',
+  status VARCHAR(30) DEFAULT 'pending',
+  hash VARCHAR(255) NULL,
+  mode VARCHAR(50) NULL,
+  bank_ref_num VARCHAR(100) NULL,
+  bankcode VARCHAR(50) NULL,
+  error_message TEXT NULL,
+  raw_response LONGTEXT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_payment_id (payment_id),
+  INDEX idx_order_id (order_id),
+  INDEX idx_txnid (txnid),
+  INDEX idx_mihpayid (mihpayid)
+);

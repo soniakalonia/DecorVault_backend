@@ -27,7 +27,7 @@ router.post(
   paymentController.refundPayment,
 );
 
-// Webhook endpoint (no auth - handled separately in webhookRoutes)
-// This is just a placeholder to show the route exists
+// ─── PayU sub-routes ─────────────────────────────────
+router.use("/payu", require("./payuRoutes"));
 
 module.exports = router;

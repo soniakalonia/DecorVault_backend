@@ -39,6 +39,31 @@ class PaymentService {
       }
 
       // Generate receipt
+      // ─── PayU branch ──────────────────────────────
+      if (paymentMethod === "payu") {
+        const PayUService = require("./payuService");
+        const result = await PayUService.createPaymentSession({
+          orderId,
+          userId,
+          amount,
+          currency,
+          userEmail,
+          userContact,
+        });
+        if (!result.success) {
+          return { success: false, error: result.error };
+        }
+        return {
+          success: true,
+          gateway: "payu",
+          paymentId: result.paymentId,
+          txnid: result.txnid,
+          payuForm: result.payuForm,
+          orderId,
+        };
+      }
+
+      // Generate receipt
       const receipt = `order_${orderId}_${Date.now()}`;
 
       // Create Razorpay order

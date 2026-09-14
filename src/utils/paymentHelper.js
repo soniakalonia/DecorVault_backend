@@ -93,6 +93,17 @@ const getPaymentMethodDisplayName = (method) => {
   return methods[method] || method;
 };
 
+const formatPayUAmount = (amount) => Number(amount).toFixed(2);
+
+const mapPayUStatus = (status) => {
+  const s = String(status).toLowerCase();
+  if (s === "success") return "paid";
+  if (s === "failure" || s === "failed") return "failed";
+  if (s === "pending" || s === "in progress") return "pending";
+  if (s === "refunded") return "refunded";
+  return "pending";
+};
+
 module.exports = {
   generateOrderNumber,
   toPaise,
@@ -104,4 +115,6 @@ module.exports = {
   validateAmount,
   generateTransactionId,
   getPaymentMethodDisplayName,
+  formatPayUAmount,
+  mapPayUStatus,
 };

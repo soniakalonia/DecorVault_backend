@@ -40,6 +40,7 @@ const bulkProductRoutes = require('./src/routes/bulkProductRoutes');
 const paymentRoutes = require('./src/routes/paymentRoutes');
 const webhookRoutes = require('./src/routes/webhookRoutes');
 const setuRoutes = require('./src/routes/setuRoutes');
+const payuRoutes = require('./src/routes/payuRoutes');   // ✅ ADD
 
 app.use('/api/auth', authRoutes);
 app.use('/api/protected', protectedRoutes);
@@ -49,13 +50,18 @@ app.use('/api/contact', contactRoutes);
 app.use('/api', publicRoutes);
 app.use('/api/blogs', blogRoutes);
 app.use('/api/orders', orderRoutes);
-app.use('/api/bulk-products', bulkProductRoutes); 
+app.use('/api/bulk-products', bulkProductRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/webhooks', webhookRoutes);
-app.use('/api/payment/setu', setuRoutes); 
+app.use('/api/payment/setu', setuRoutes);
+
+// ─── PayU routes ─────────────────────────────────────
+// Frontend-facing endpoints (initiate/verify/status)
+app.use('/api/payment/payu', payuRoutes);
+// PayU server redirect endpoints (surl/furl) — PayU POSTs to these
+app.use('/api/payu', payuRoutes);
 
 // Start Server
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
-
