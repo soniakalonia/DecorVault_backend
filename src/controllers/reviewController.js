@@ -51,10 +51,10 @@ exports.getProductReviews = async (req, res) => {
 
     const [reviews] = await db.query(
       `SELECT r.*, u.full_name as user_name 
-       FROM reviews r 
-       LEFT JOIN users u ON r.user_id = u.id 
-       WHERE r.product_id = ? AND r.status = 'approved'
-       ORDER BY r.created_at DESC`,
+ FROM reviews r 
+ LEFT JOIN users u ON r.user_id = u.id 
+ WHERE r.product_id = ?
+ ORDER BY r.created_at DESC`
       [productId],
     );
 

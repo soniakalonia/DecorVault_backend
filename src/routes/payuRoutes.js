@@ -10,7 +10,7 @@ router.post("/initiate", authenticate, payuController.initiatePayment);
 router.post("/verify", authenticate, payuController.verifyPayment);
 
 // Get payment status by order ID
-router.get("/status/:orderId", authenticate, payuController.getPaymentStatus);
+router.get("/status/:orderId", payuController.getPaymentStatus);
 
 // PayU redirects (POST) here after payment — NOT authenticated (PayU server hits these)
 router.post("/success", payuController.handleSuccess);
