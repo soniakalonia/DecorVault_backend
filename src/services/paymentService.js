@@ -175,7 +175,10 @@ class PaymentService {
         `UPDATE orders SET status = 'confirmed', confirmed_at = NOW() WHERE id = ?`,
         [payment.order_id],
       );
-
+      // 🧾 Fire-and-forget invoice email (won't block or fail the response)
+      require("../controllers/orderController")
+        .sendInvoiceAfterSuccess(payment.order_id)
+        .catch((e) => console.error("Invoice email error:", e.message));
       return {
         success: true,
         message: "Payment verified successfully",

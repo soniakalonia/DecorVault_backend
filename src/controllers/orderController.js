@@ -810,3 +810,130 @@ exports.getOrderStatus = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+// ===================== INVOICE PDF =====================
+
+/**
+ * Builds the invoice data for a given order id and returns:
+ * { order, items, user, orderNumber }
+ */
+async function buildInvoiceData(orderId) {
+  const [orders] = await db.execute(
+    `SELECT o.*, u.full_name, u.email, u.mobile
+     FROM orders o
+     LEFT JOIN users u ON o.user_id = u.id
+     WHERE o.id = ?`,
+    [orderId],
+  );
+
+  if (orders.length === 0) return null;
+
+  const order = orders[0];
+  order.order_number = `ORD-${String(order.id).padStart(3, "0")}`;
+
+  const [items] = await db.execute(
+    `SELECT oi.*, p.name AS product_name, p.slug
+     FROM order_items oi
+     LEFT JOIN products p ON oi.product_id = p.id
+     WHERE oi.order_id = ?`,
+    [orderId],
+  );
+
+  const user = {
+    full_name: order.full_name,
+    email: order.email,
+    mobile: order.mobile,
+  };
+
+  return { order, items, user, orderNumber: order.order_number };
+}
+
+/**
+ * Streams the invoice PDF directly to the browser (for download button).
+ */
+exports.downloadInvoicePDF = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    // Ownership check
+    const [rows] = await db.execute(
+      "SELECT user_id FROM orders WHERE id = ?",
+      [id],
+    );
+    if (rows.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
+    }
+    // Allow if owner OR admin
+    if (rows[0].user_id !== userId && req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Not authorized" });
+    }
+
+    const data = await buildInvoiceData(id);
+    if (!data) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
+    }
+
+    const { generateInvoicePDF } = require("../utils/invoiceGenerator");
+    const pdfBuffer = await generateInvoicePDF(data);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="Invoice-${data.orderNumber}.pdf"`,
+    );
+    res.setHeader("Content-Length", pdfBuffer.length);
+    return res.end(pdfBuffer);
+  } catch (error) {
+    console.error("Download invoice error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Generates PDF and emails it to the customer.
+ * Called from payment success flows (Razorpay / PayU / Setu).
+ * Safe to call multiple times — will only email if order not already emailed.
+ * (If you want to force-email every call, remove the idempotency check.)
+ */
+exports.sendInvoiceAfterSuccess = async (orderId) => {
+  try {
+    if (!orderId) return;
+
+    const data = await buildInvoiceData(orderId);
+    if (!data) {
+      console.warn(`[invoice] Order ${orderId} not found, skipping invoice`);
+      return;
+    }
+
+    const { order, items, user, orderNumber } = data;
+
+    if (!user?.email) {
+      console.warn(`[invoice] No email for order ${orderId}, skipping`);
+      return;
+    }
+
+    const { generateInvoicePDF } = require("../utils/invoiceGenerator");
+    const { sendInvoiceEmail } = require("../utils/emailService");
+
+    const pdfBuffer = await generateInvoicePDF({ order, items, user });
+
+    await sendInvoiceEmail({
+      to: user.email,
+      customerName: user.full_name,
+      orderNumber,
+      orderId: order.id,
+      pdfBuffer,
+    });
+
+    console.log(`✅ Invoice emailed for order ${orderNumber} → ${user.email}`);
+  } catch (err) {
+    // Never throw — this is a side-effect, not the main flow
+    console.error("❌ sendInvoiceAfterSuccess failed:", err.message);
+  }
+};

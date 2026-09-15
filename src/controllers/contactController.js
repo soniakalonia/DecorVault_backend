@@ -1,4 +1,8 @@
 const db = require("../config/db");
+const {
+  sendContactFormEmail,
+  sendContactConfirmationToUser,
+} = require("../utils/emailService");
 
 // Submit contact form
 exports.submitContactForm = async (req, res) => {
@@ -49,7 +53,24 @@ exports.submitContactForm = async (req, res) => {
       "pending",
     ]);
 
-    res.status(201).json({
+    // 📧 Send email to admin (non-blocking — failure won't break the request)
+    try {
+      await sendContactFormEmail({ name, email, phone, subject, message });
+      console.log("✅ Contact email sent to admin");
+    } catch (emailError) {
+      console.error("⚠️ Failed to send admin email:", emailError.message);
+    }
+
+    // 📧 Send confirmation to the user
+    try {
+      await sendContactConfirmationToUser({ name, email });
+      console.log("✅ Confirmation email sent to user");
+    } catch (emailError) {
+      console.error("⚠️ Failed to send user confirmation:", emailError.message);
+    }
+
+    // ✅ SINGLE response
+    return res.status(201).json({
       success: true,
       message:
         "Your message has been sent successfully. We will get back to you soon.",
@@ -57,7 +78,7 @@ exports.submitContactForm = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Error processing contact form:", error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to send message. Please try again.",
       error: error.message,

@@ -94,13 +94,13 @@ exports.getPaymentStatus = async (req, res) => {
 };
 
 // PayU redirects here (POST) on success — we verify then redirect to frontend
+
 exports.handleSuccess = async (req, res) => {
   try {
     const payload = req.body;
     const result = await PayUService.verifyPayment(payload);
 
-    const frontendURL =
-      process.env.FRONTEND_URL || "http://localhost:3000";
+    const frontendURL = process.env.FRONTEND_URL || "http://localhost:3000";
 
     if (!result.success) {
       return res.redirect(
@@ -110,13 +110,19 @@ exports.handleSuccess = async (req, res) => {
       );
     }
 
+    // 🧾 Send invoice email (non-blocking)
+    if (result.orderId) {
+      require("./orderController")
+        .sendInvoiceAfterSuccess(result.orderId)
+        .catch((e) => console.error("Invoice email error:", e.message));
+    }
+
     return res.redirect(
       `${frontendURL}/payment/payu/success?txnid=${payload.txnid}&orderId=${result.orderId}&paymentId=${result.paymentId}`,
     );
   } catch (error) {
     console.error("PayU success handler error:", error);
-    const frontendURL =
-      process.env.FRONTEND_URL || "http://localhost:3000";
+    const frontendURL = process.env.FRONTEND_URL || "http://localhost:3000";
     return res.redirect(
       `${frontendURL}/payment/payu/failure?reason=server_error`,
     );

@@ -43,6 +43,9 @@ router.get("/:id", authenticate, orderController.getOrderById);
 
 // Get order invoice
 router.get("/:id/invoice", authenticate, orderController.getOrderInvoice);
+// Download invoice as PDF (streamed)
+router.get( "/:id/invoice/pdf", authenticate,orderController.downloadInvoicePDF,
+);
 
 // Cancel order
 router.post("/:id/cancel", authenticate, orderController.cancelOrder);
