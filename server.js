@@ -16,6 +16,7 @@ app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static('uploads'));
+app.use('/public', express.static('public'));
 
 // Basic Route
 app.get('/', (req, res) => {
@@ -40,7 +41,7 @@ const bulkProductRoutes = require('./src/routes/bulkProductRoutes');
 const paymentRoutes = require('./src/routes/paymentRoutes');
 const webhookRoutes = require('./src/routes/webhookRoutes');
 const setuRoutes = require('./src/routes/setuRoutes');
-const payuRoutes = require('./src/routes/payuRoutes');   // ✅ ADD
+const payuRoutes = require('./src/routes/payuRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/protected', protectedRoutes);
@@ -56,9 +57,7 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/payment/setu', setuRoutes);
 
 // ─── PayU routes ─────────────────────────────────────
-// Frontend-facing endpoints (initiate/verify/status)
 app.use('/api/payment/payu', payuRoutes);
-// PayU server redirect endpoints (surl/furl) — PayU POSTs to these
 app.use('/api/payu', payuRoutes);
 
 // Start Server
