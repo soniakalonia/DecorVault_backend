@@ -61,7 +61,7 @@ function numberToWords(amount) {
   return words + " Only";
 }
 
-function buildInvoiceHTML({ invoice, company, qrDataUri, trackingUrl }) {
+function buildInvoiceHTML({ invoice, company }) {
   const rupee = "&#8377;";
   const fmt = (v) =>
     Number.isFinite(Number(v)) ? Number(v).toFixed(2) : "0.00";
@@ -174,14 +174,6 @@ function buildInvoiceHTML({ invoice, company, qrDataUri, trackingUrl }) {
       }
       .muted { color: #666; font-size: 11px; }
       .right { text-align: right; }
-      .qr-container {
-        display: flex; flex-direction: column; align-items: center; gap: 4px;
-      }
-      .qr {
-        border: 1px solid #ddd; padding: 4px;
-        width: 72px; height: 72px; background: #fff;
-      }
-      .qr-label { font-size: 9px; color: #666; text-align: center; }
       .company-details {
         display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
         font-size: 11px; color: #444; padding: 8px 0;
@@ -280,14 +272,6 @@ function buildInvoiceHTML({ invoice, company, qrDataUri, trackingUrl }) {
             <strong>Invoice Date:</strong> ${safe(orderDate)}
           </div>
         </div>
-        ${
-          qrDataUri
-            ? `<div class="right qr-container">
-                 <img class="qr" src="${qrDataUri}" alt="Invoice QR" />
-                 <div class="qr-label">Scan to view order</div>
-               </div>`
-            : ""
-        }
       </div>
 
       <div class="address-grid">

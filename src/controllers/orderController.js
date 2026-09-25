@@ -647,7 +647,6 @@ exports.cancelOrder = async (req, res) => {
       });
     }
 
-    // ✅ FIXED: Removed cancel_note column (since it doesn't exist)
     await db.execute(
       `UPDATE orders SET 
         status = 'cancelled', 
@@ -810,6 +809,7 @@ exports.getOrderStatus = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
 // ===================== INVOICE PDF =====================
 
 /**
@@ -898,13 +898,37 @@ exports.downloadInvoicePDF = async (req, res) => {
 /**
  * Generates PDF and emails it to the customer.
  * Called from payment success flows (Razorpay / PayU / Setu).
- * Safe to call multiple times — will only email if order not already emailed.
- * (If you want to force-email every call, remove the idempotency check.)
+ *
+ * FIXES:
+ *  - Full stack trace on failure (was only err.message)
+ *  - Retry up to 3 times with backoff (handles transient Puppeteer failures)
+ *  - Idempotency guard so the same order isn't emailed twice in quick succession
+ *  - Clear step-by-step logging so you can pinpoint exactly where it dies
  */
-exports.sendInvoiceAfterSuccess = async (orderId) => {
-  try {
-    if (!orderId) return;
 
+// In-memory guard to avoid duplicate sends for the same order within a session
+const invoiceSendInFlight = new Set();
+
+exports.sendInvoiceAfterSuccess = async (orderId) => {
+  const key = String(orderId);
+
+  // Prevent duplicate concurrent calls (e.g. Razorpay verify + webhook both firing)
+  if (invoiceSendInFlight.has(key)) {
+    console.log(`[invoice] Order ${key} already in flight, skipping duplicate`);
+    return;
+  }
+  invoiceSendInFlight.add(key);
+
+  const startedAt = Date.now();
+
+  try {
+    if (!orderId) {
+      console.warn("[invoice] No orderId provided, skipping");
+      return;
+    }
+
+    // ─── Step 1: Load order data ───
+    console.log(`[invoice] ▶ Order ${key} — loading invoice data...`);
     const data = await buildInvoiceData(orderId);
     if (!data) {
       console.warn(`[invoice] Order ${orderId} not found, skipping invoice`);
@@ -921,9 +945,37 @@ exports.sendInvoiceAfterSuccess = async (orderId) => {
     const { generateInvoicePDF } = require("../utils/invoiceGenerator");
     const { sendInvoiceEmail } = require("../utils/emailService");
 
-    const pdfBuffer = await generateInvoicePDF({ order, items, user });
+    // ─── Step 2: Generate PDF with retry ───
+    console.log(`[invoice] ▶ Order ${orderNumber} — generating PDF...`);
+    let pdfBuffer;
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        pdfBuffer = await generateInvoicePDF({ order, items, user });
+        console.log(
+          `[invoice] ✔ PDF generated (attempt ${attempt}, ${pdfBuffer.length} bytes, ${Date.now() - startedAt}ms)`,
+        );
+        break;
+      } catch (err) {
+        lastErr = err;
+        console.error(
+          `[invoice] ✖ PDF attempt ${attempt}/3 failed: ${err.message}`,
+        );
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 1500 * attempt));
+        }
+      }
+    }
 
-    await sendInvoiceEmail({
+    if (!pdfBuffer) {
+      throw lastErr || new Error("PDF generation failed after 3 attempts");
+    }
+
+    // ─── Step 3: Send email ───
+    console.log(
+      `[invoice] ▶ Order ${orderNumber} — sending email to ${user.email}...`,
+    );
+    const info = await sendInvoiceEmail({
       to: user.email,
       customerName: user.full_name,
       orderNumber,
@@ -931,9 +983,17 @@ exports.sendInvoiceAfterSuccess = async (orderId) => {
       pdfBuffer,
     });
 
-    console.log(`✅ Invoice emailed for order ${orderNumber} → ${user.email}`);
+    console.log(
+      `[invoice] ✅ Order ${orderNumber} → ${user.email} (messageId: ${info?.messageId}, total: ${Date.now() - startedAt}ms)`,
+    );
   } catch (err) {
-    // Never throw — this is a side-effect, not the main flow
-    console.error("❌ sendInvoiceAfterSuccess failed:", err.message);
+    // Never throw — this is a side-effect, not the main flow.
+    // But log the FULL stack so we can actually debug.
+    console.error(
+      `❌ sendInvoiceAfterSuccess failed for order ${key}:`,
+      err.stack || err,
+    );
+  } finally {
+    invoiceSendInFlight.delete(key);
   }
 };

@@ -39,9 +39,9 @@ const notifyNewOrder = async (orderId, customerName, total) => {
 };
 
 const notifyOrderStatusChange = async (orderId, status, userId = null) => {
-  const orderNum = orderId.toString().includes("VMR")
+  const orderNum = orderId.toString().includes("DV")
     ? orderId
-    : `VMR-${String(orderId).padStart(3, "0")}`;
+    : `DV-${String(orderId).padStart(3, "0")}`;
   await createNotification({
     user_id: userId,
     type: "order",

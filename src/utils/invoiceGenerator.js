@@ -2,17 +2,38 @@ const puppeteer = require("puppeteer");
 const QRCode = require("qrcode");
 const { buildInvoiceHTML } = require("./invoiceTemplate");
 
-/**
- * Generate invoice PDF buffer using Puppeteer + shared HTML template.
- *
- * @param {Object} params
- * @param {Object} params.order   - order row
- * @param {Array}  params.items   - order items
- * @param {Object} params.user    - { full_name, email, mobile }
- * @returns {Promise<Buffer>} PDF buffer
- */
+// ─── Reuse a single browser instance across calls ───
+let browserPromise = null;
+
+async function getBrowser() {
+  if (browserPromise) {
+    try {
+      const b = await browserPromise;
+      if (b.isConnected()) return b;
+    } catch {
+      /* fall through and relaunch */
+    }
+  }
+
+  browserPromise = puppeteer.launch({
+    headless: true, // ← more stable than "new" on Windows
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage", // helps when /dev/shm is small
+      "--disable-gpu",
+      "--no-first-run",
+      "--no-zygote",
+      "--disable-extensions",
+    ],
+    timeout: 60000,               // ← allow up to 60s to launch
+    protocolTimeout: 120000,      // ← allow up to 2min for page ops
+  });
+
+  return browserPromise;
+}
+
 async function generateInvoicePDF({ order, items, user }) {
-  // ─── Company details from ENV ───
   const company = {
     name: process.env.COMPANY_NAME || "Company",
     tagline: process.env.COMPANY_TAGLINE || "",
@@ -26,7 +47,6 @@ async function generateInvoicePDF({ order, items, user }) {
 
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
 
-  // ─── Parsed address ───
   let address = {};
   try {
     address =
@@ -39,10 +59,8 @@ async function generateInvoicePDF({ order, items, user }) {
 
   const orderNumber =
     order.order_number || `ORD-${String(order.id).padStart(3, "0")}`;
-
   const trackingUrl = `${frontendUrl}/order-tracking?orderId=${order.id}`;
 
-  // ─── QR code as data URI ───
   let qrDataUri = "";
   try {
     qrDataUri = await QRCode.toDataURL(trackingUrl, {
@@ -54,7 +72,6 @@ async function generateInvoicePDF({ order, items, user }) {
     console.warn("[invoice] QR generation failed:", e.message);
   }
 
-  // ─── Build invoice object for template ───
   const invoice = {
     orderNumber,
     orderDate: order.created_at
@@ -79,7 +96,6 @@ async function generateInvoicePDF({ order, items, user }) {
     status: order.status || "",
   };
 
-  // ─── Render HTML ───
   const html = buildInvoiceHTML({
     invoice,
     company,
@@ -87,24 +103,46 @@ async function generateInvoicePDF({ order, items, user }) {
     trackingUrl,
   });
 
-  // ─── Puppeteer → PDF ───
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+  // ─── Retry up to 3 times ───
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let page;
+    try {
+      const browser = await getBrowser();
+      page = await browser.newPage();
+      await page.setContent(html, { waitUntil: "domcontentloaded" });
 
-  try {
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
-    const pdfBuffer = await page.pdf({
-      format: "A4",
-      printBackground: true,
-      margin: { top: "0mm", right: "0mm", bottom: "0mm", left: "0mm" },
-    });
-    return pdfBuffer;
-  } finally {
-    await browser.close();
+      const pdfBuffer = await page.pdf({
+        format: "A4",
+        printBackground: true,
+        margin: { top: "0mm", right: "0mm", bottom: "0mm", left: "0mm" },
+      });
+
+      await page.close();
+      return pdfBuffer;
+    } catch (err) {
+      lastErr = err;
+      console.error(
+        `[invoice] PDF attempt ${attempt}/3 failed:`,
+        err.message,
+      );
+
+      // If the browser died, force a relaunch next time
+      browserPromise = null;
+
+      if (page) {
+        try {
+          await page.close();
+        } catch {}
+      }
+
+      if (attempt < 3) {
+        await new Promise((r) => setTimeout(r, 1500 * attempt));
+      }
+    }
   }
+
+  throw lastErr;
 }
 
 module.exports = { generateInvoicePDF };
