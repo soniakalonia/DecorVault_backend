@@ -276,6 +276,21 @@ exports.createOrder = async (req, res) => {
       link: "/user-dashboard/orders",
     });
 
+    // 🧾 Send invoice immediately for COD orders
+    // (Prepaid orders get theirs after payment verification)
+    const isCOD =
+      typeof paymentMethod === "string" &&
+      paymentMethod.toLowerCase().includes("cod");
+
+    if (isCOD) {
+      console.log(`[order] COD order ${orderNumber} — sending invoice...`);
+      exports
+        .sendInvoiceAfterSuccess(orderId)
+        .catch((e) =>
+          console.error("[order] COD invoice email error:", e.message),
+        );
+    }
+
     res.status(201).json({ success: true, orderId, orderNumber });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -678,7 +693,7 @@ exports.cancelOrder = async (req, res) => {
         user_id: userId,
         type: "order",
         title: "Order Cancelled",
-        message: `Your order #ORD-${String(id).padStart(3, "0")} has been cancelled. ${isPrepaid ? "Refund will be processed within 3-5 business days." : ""}`,
+        message: `Your order ORD-${String(id).padStart(3, "0")} has been cancelled. ${isPrepaid ? "Refund will be processed within 3-5 business days." : ""}`,
         priority: "high",
         link: `/user-dashboard/orders`,
       });
@@ -748,7 +763,7 @@ exports.reportIssue = async (req, res) => {
         user_id: admin.id,
         type: "support",
         title: "New Issue Reported",
-        message: `User has reported an issue on order #ORD-${String(id).padStart(3, "0")}. Reason: ${reason}`,
+        message: `User has reported an issue on order ORD-${String(id).padStart(3, "0")}. Reason: ${reason}`,
         priority: "high",
         link: `/admin-dashboard/orders/${id}`,
       });
