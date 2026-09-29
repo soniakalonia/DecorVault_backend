@@ -214,31 +214,25 @@ exports.updateOrderStatus = async (req, res) => {
 
 exports.createOrder = async (req, res) => {
   try {
-    const {
-      items,
-      address,
-      paymentMethod,
-      subtotal,
-      gst,
-      deliveryCharges,
-      discount,
-      total,
-    } = req.body;
+    const { items, address, paymentMethod } = req.body;
     const userId = req.user.id;
 
+    // ===================== Recalculate on backend (source of truth) =====================
+    const subtotal = items.reduce(
+      (sum, item) => sum + Number(item.price) * Number(item.quantity),
+      0
+    );
+    const deliveryCharges = subtotal > 1000 ? 0 : 50;
+    const discount = 0; // TODO: coupon discount backend se apply karna
+    const gstRate = 18;
+    const gst = Math.round(((subtotal - discount + deliveryCharges) * gstRate) / 100);
+    const total = subtotal - discount + gst + deliveryCharges;
+
+    // ===================== Insert order =====================
     const [result] = await db.execute(
       `INSERT INTO orders (user_id, address, payment_method, subtotal, gst, delivery_charges, discount, total, status) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-      [
-        userId,
-        JSON.stringify(address),
-        paymentMethod,
-        subtotal,
-        gst,
-        deliveryCharges,
-        discount,
-        total,
-      ],
+      [userId, JSON.stringify(address), paymentMethod, subtotal, gst, deliveryCharges, discount, total]
     );
 
     const orderId = result.insertId;
@@ -258,14 +252,11 @@ exports.createOrder = async (req, res) => {
           item.price,
           item.original_price || item.price,
           item.discount_price || item.price,
-        ],
+        ]
       );
     }
 
-    const [user] = await db.execute(
-      "SELECT full_name FROM users WHERE id = ?",
-      [userId],
-    );
+    const [user] = await db.execute("SELECT full_name FROM users WHERE id = ?", [userId]);
     await notifyNewOrder(orderNumber, user[0].full_name, total);
     await createNotification({
       user_id: userId,
@@ -276,22 +267,25 @@ exports.createOrder = async (req, res) => {
       link: "/user-dashboard/orders",
     });
 
-    // 🧾 Send invoice immediately for COD orders
-    // (Prepaid orders get theirs after payment verification)
-    const isCOD =
-      typeof paymentMethod === "string" &&
-      paymentMethod.toLowerCase().includes("cod");
-
+    const isCOD = typeof paymentMethod === "string" && paymentMethod.toLowerCase().includes("cod");
     if (isCOD) {
       console.log(`[order] COD order ${orderNumber} — sending invoice...`);
-      exports
-        .sendInvoiceAfterSuccess(orderId)
-        .catch((e) =>
-          console.error("[order] COD invoice email error:", e.message),
-        );
+      exports.sendInvoiceAfterSuccess(orderId).catch((e) =>
+        console.error("[order] COD invoice email error:", e.message)
+      );
     }
 
-    res.status(201).json({ success: true, orderId, orderNumber });
+    res.status(201).json({
+      success: true,
+      orderId,
+      orderNumber,
+      // Return calculated values so frontend can verify
+      subtotal,
+      gst,
+      deliveryCharges,
+      discount,
+      total,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

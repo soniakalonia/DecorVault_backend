@@ -1,0 +1,1009 @@
+==================== src/config/razorpay.js ====================
+const Razorpay = require("razorpay");
+const dotenv = require("dotenv");
+
+dotenv.config();
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
+
+module.exports = razorpay;
+==================== src/services/razorpayService.js ====================
+const razorpay = require("../config/razorpay");
+const crypto = require("crypto");
+const Payment = require("../models/Payment");
+const Transaction = require("../models/Transaction");
+
+class RazorpayService {
+  // Create a Razorpay order
+  static async createOrder(orderData) {
+    try {
+      const { amount, currency = "INR", receipt, notes = {} } = orderData;
+
+      const options = {
+        amount: amount * 100, // Convert to paise
+        currency,
+        receipt,
+        notes,
+      };
+
+      const order = await razorpay.orders.create(options);
+
+      return {
+        success: true,
+        orderId: order.id,
+        amount: order.amount / 100,
+        currency: order.currency,
+        receipt: order.receipt,
+        status: order.status,
+      };
+    } catch (error) {
+      console.error("Razorpay create order error:", error);
+      return {
+        success: false,
+        error: error.message,
+        details: error,
+      };
+    }
+  }
+
+  // Verify payment signature
+  static verifyPaymentSignature(paymentData) {
+    try {
+      const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
+        paymentData;
+
+      const body = `${razorpay_order_id}|${razorpay_payment_id}`;
+      const expectedSignature = crypto
+        .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+        .update(body.toString())
+        .digest("hex");
+
+      const isValid = expectedSignature === razorpay_signature;
+
+      return {
+        success: true,
+        isValid,
+        orderId: razorpay_order_id,
+        paymentId: razorpay_payment_id,
+        signature: razorpay_signature,
+      };
+    } catch (error) {
+      console.error("Signature verification error:", error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  // Capture payment
+  static async capturePayment(paymentId, amount) {
+    try {
+      const payment = await razorpay.payments.capture(
+        paymentId,
+        amount * 100,
+        "INR",
+      );
+
+      return {
+        success: true,
+        paymentId: payment.id,
+        status: payment.status,
+        amount: payment.amount / 100,
+        currency: payment.currency,
+        method: payment.method,
+        bank: payment.bank,
+        wallet: payment.wallet,
+        vpa: payment.vpa,
+      };
+    } catch (error) {
+      console.error("Capture payment error:", error);
+      return {
+        success: false,
+        error: error.message,
+        details: error,
+      };
+    }
+  }
+
+  // Refund payment
+  static async refundPayment(paymentId, amount, notes = {}) {
+    try {
+      const refund = await razorpay.payments.refund(paymentId, {
+        amount: amount * 100,
+        notes,
+      });
+
+      return {
+        success: true,
+        refundId: refund.id,
+        paymentId: refund.payment_id,
+        amount: refund.amount / 100,
+        status: refund.status,
+        notes: refund.notes,
+      };
+    } catch (error) {
+      console.error("Refund payment error:", error);
+      return {
+        success: false,
+        error: error.message,
+        details: error,
+      };
+    }
+  }
+
+  // Fetch payment details
+  static async fetchPayment(paymentId) {
+    try {
+      const payment = await razorpay.payments.fetch(paymentId);
+
+      return {
+        success: true,
+        id: payment.id,
+        orderId: payment.order_id,
+        amount: payment.amount / 100,
+        currency: payment.currency,
+        status: payment.status,
+        method: payment.method,
+        bank: payment.bank,
+        wallet: payment.wallet,
+        vpa: payment.vpa,
+        email: payment.email,
+        contact: payment.contact,
+        description: payment.description,
+      };
+    } catch (error) {
+      console.error("Fetch payment error:", error);
+      return {
+        success: false,
+        error: error.message,
+        details: error,
+      };
+    }
+  }
+
+  // Fetch order details
+  static async fetchOrder(orderId) {
+    try {
+      const order = await razorpay.orders.fetch(orderId);
+
+      return {
+        success: true,
+        id: order.id,
+        amount: order.amount / 100,
+        currency: order.currency,
+        status: order.status,
+        receipt: order.receipt,
+        notes: order.notes,
+        attempts: order.attempts,
+      };
+    } catch (error) {
+      console.error("Fetch order error:", error);
+      return {
+        success: false,
+        error: error.message,
+        details: error,
+      };
+    }
+  }
+
+  // Process webhook event
+  static async processWebhookEvent(event, payload) {
+    try {
+      const { event: eventType, payload: eventPayload } = payload;
+
+      switch (eventType) {
+        case "payment.captured":
+          return await this.handlePaymentCaptured(eventPayload);
+        case "payment.failed":
+          return await this.handlePaymentFailed(eventPayload);
+        case "order.paid":
+          return await this.handleOrderPaid(eventPayload);
+        case "refund.created":
+          return await this.handleRefundCreated(eventPayload);
+        case "refund.processed":
+          return await this.handleRefundProcessed(eventPayload);
+        default:
+          return { success: true, message: "Event processed" };
+      }
+    } catch (error) {
+      console.error("Webhook processing error:", error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  // Handle payment captured event
+  static async handlePaymentCaptured(payload) {
+    const { payment } = payload;
+
+    // Find payment by gateway order ID
+    const paymentRecord = await Payment.findByGatewayOrderId(payment.order_id);
+    if (!paymentRecord) {
+      console.error(`Payment not found for order: ${payment.order_id}`);
+      return { success: false, error: "Payment record not found" };
+    }
+
+    // Create transaction record
+    await Transaction.create({
+      payment_id: paymentRecord.id,
+      gateway: "razorpay",
+      gateway_transaction_id: payment.id,
+      type: "payment",
+      amount: payment.amount / 100,
+      status: "success",
+      response_data: payment,
+    });
+
+    // Update payment status
+    await Payment.update(paymentRecord.id, {
+      status: "paid",
+      gateway_payment_id: payment.id,
+      gateway_response: payment,
+    });
+
+    // Update order status
+    const db = require("../config/db");
+    await db.execute(
+      `UPDATE orders SET status = 'confirmed', confirmed_at = NOW() WHERE id = ?`,
+      [paymentRecord.order_id],
+    );
+    return { success: true, message: "Payment captured and processed" };
+  }
+
+  // Handle payment failed event
+  static async handlePaymentFailed(payload) {
+    const { payment } = payload;
+
+    const paymentRecord = await Payment.findByGatewayOrderId(payment.order_id);
+    if (!paymentRecord) {
+      console.error(`Payment not found for order: ${payment.order_id}`);
+      return { success: false, error: "Payment record not found" };
+    }
+
+    // Create transaction record
+    await Transaction.create({
+      payment_id: paymentRecord.id,
+      gateway: "razorpay",
+      gateway_transaction_id: payment.id,
+      type: "payment",
+      amount: payment.amount / 100,
+      status: "failed",
+      response_data: payment,
+      error_message: payment.error_description || "Payment failed",
+    });
+
+    // Update payment status
+    await Payment.update(paymentRecord.id, {
+      status: "failed",
+      gateway_payment_id: payment.id,
+      gateway_response: payment,
+    });
+
+    return { success: true, message: "Payment failure recorded" };
+  }
+
+  // Handle order paid event
+  static async handleOrderPaid(payload) {
+    const { order, payment } = payload;
+    return { success: true, message: "Order paid event processed" };
+  }
+
+  // Handle refund created event
+  static async handleRefundCreated(payload) {
+    const { refund } = payload;
+    return { success: true, message: "Refund created event processed" };
+  }
+
+  // Handle refund processed event
+  static async handleRefundProcessed(payload) {
+    const { refund } = payload;
+    return { success: true, message: "Refund processed event processed" };
+  }
+}
+
+module.exports = RazorpayService;
+==================== src/controllers/paymentController.js ====================
+const db = require("../config/db");
+const PaymentService = require("../services/paymentService");
+const WebhookService = require("../services/webhookService");
+const { validateAmount } = require("../utils/paymentHelper");
+
+// Initiate payment
+exports.initiatePayment = async (req, res) => {
+  try {
+    const {
+      orderId,
+      amount,
+      currency = "INR",
+      paymentMethod = "razorpay",
+    } = req.body;
+    const userId = req.user.id;
+
+    // Validate amount
+    const amountValidation = validateAmount(amount);
+    if (!amountValidation.valid) {
+      return res
+        .status(400)
+        .json({ success: false, message: amountValidation.message });
+    }
+
+    // Get user details
+    const [users] = await db.execute(
+      "SELECT email, mobile FROM users WHERE id = ?",
+      [userId],
+    );
+    if (users.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    const user = users[0];
+
+    // Initialize payment
+    const result = await PaymentService.initializePayment({
+      orderId,
+      userId,
+      amount,
+      paymentMethod,
+      currency,
+      userEmail: user.email,
+      userContact: user.mobile,
+      notes: {
+        userId: userId.toString(),
+        orderId: orderId.toString(),
+      },
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ success: false, message: result.error });
+    }
+
+    res.json({
+      success: true,
+      data: result,
+      message: "Payment initiated successfully",
+    });
+  } catch (error) {
+    console.error("Initiate payment error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Verify payment
+exports.verifyPayment = async (req, res) => {
+  try {
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      orderId,
+    } = req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required payment verification data",
+      });
+    }
+
+    const result = await PaymentService.verifyPayment({
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      orderId,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ success: false, message: result.error });
+    }
+
+    res.json({
+      success: true,
+      data: result,
+      message: "Payment verified successfully",
+    });
+  } catch (error) {
+    console.error("Verify payment error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Get payment status
+exports.getPaymentStatus = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const result = await PaymentService.getPaymentStatus(orderId);
+
+    if (!result.success) {
+      return res.status(404).json({ success: false, message: result.error });
+    }
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error("Get payment status error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Get user payment history
+exports.getPaymentHistory = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const result = await PaymentService.getUserPaymentHistory(userId);
+
+    if (!result.success) {
+      return res.status(404).json({ success: false, message: result.error });
+    }
+
+    res.json({ success: true, payments: result.payments });
+  } catch (error) {
+    console.error("Get payment history error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Refund payment (admin only)
+exports.refundPayment = async (req, res) => {
+  try {
+    const { orderId, amount, reason } = req.body;
+
+    if (!orderId || !amount) {
+      return res.status(400).json({
+        success: false,
+        message: "Order ID and amount are required",
+      });
+    }
+
+    const result = await PaymentService.refundPayment(orderId, amount, reason);
+
+    if (!result.success) {
+      return res.status(400).json({ success: false, message: result.error });
+    }
+
+    res.json({
+      success: true,
+      data: result,
+      message: "Refund processed successfully",
+    });
+  } catch (error) {
+    console.error("Refund payment error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Handle webhook
+exports.handleWebhook = async (req, res) => {
+  try {
+    // The webhook middleware already processed the webhook
+    // and attached the result to req.webhookResult
+    const result = req.webhookResult;
+
+    if (!result || !result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result?.error || "Webhook processing failed",
+      });
+    }
+
+    res.json({ success: true, message: "Webhook processed successfully" });
+  } catch (error) {
+    console.error("Webhook handler error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Get webhook logs (admin only)
+exports.getWebhookLogs = async (req, res) => {
+  try {
+    const { gateway, limit = 100 } = req.query;
+
+    const result = await WebhookService.getWebhookLogs(
+      gateway,
+      parseInt(limit),
+    );
+
+    if (!result.success) {
+      return res.status(400).json({ success: false, message: result.error });
+    }
+
+    res.json({ success: true, logs: result.logs });
+  } catch (error) {
+    console.error("Get webhook logs error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Get webhook stats (admin only)
+exports.getWebhookStats = async (req, res) => {
+  try {
+    const result = await WebhookService.getWebhookStats();
+
+    if (!result.success) {
+      return res.status(400).json({ success: false, message: result.error });
+    }
+
+    res.json({ success: true, stats: result.stats });
+  } catch (error) {
+    console.error("Get webhook stats error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+==================== src/routes/paymentRoutes.js ====================
+const express = require("express");
+const router = express.Router();
+const { authenticate, isAdmin } = require("../middleware/auth");
+const paymentController = require("../controllers/paymentController");
+const PaymentService = require("../services/paymentService");
+
+// Initialize payment (authenticated users only)
+router.post("/initiate", authenticate, paymentController.initiatePayment);
+
+// Verify payment (authenticated users only)
+router.post("/verify", authenticate, paymentController.verifyPayment);
+
+// Get payment status by order ID (authenticated users only)
+router.get(
+  "/status/:orderId",
+  authenticate,
+  paymentController.getPaymentStatus,
+);
+
+// Get user payment history (authenticated users only)
+router.get("/history", authenticate, paymentController.getPaymentHistory);
+
+// Refund payment (admin only)
+router.post(
+  "/refund",
+  [authenticate, isAdmin],
+  paymentController.refundPayment,
+);
+
+// ─── PayU sub-routes ─────────────────────────────────
+router.use("/payu", require("./payuRoutes"));
+
+module.exports = router;
+==================== MISSING: src/utils/razorpayLoader.ts ====================
+==================== src/middleware/webhook.js ====================
+const WebhookService = require("../services/webhookService");
+
+// Validate webhook signature and payload
+const validateWebhook = async (req, res, next) => {
+  try {
+    const gateway = req.params.gateway || "razorpay";
+    const signature =
+      req.headers["x-razorpay-signature"] || req.headers["x-webhook-signature"];
+    const payload = req.body;
+    const ipAddress = req.ip || req.connection.remoteAddress;
+    const userAgent = req.headers["user-agent"];
+
+    if (!payload) {
+      return res.status(400).json({ error: "Missing payload" });
+    }
+
+    if (!signature) {
+      return res.status(400).json({ error: "Missing signature" });
+    }
+
+    // Process webhook
+    const result = await WebhookService.processWebhook(
+      gateway,
+      payload,
+      signature,
+      ipAddress,
+      userAgent,
+    );
+
+    if (!result.success) {
+      return res
+        .status(400)
+        .json({ error: result.error || "Webhook processing failed" });
+    }
+
+    req.webhookResult = result;
+    next();
+  } catch (error) {
+    console.error("Webhook validation error:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+// Validate Razorpay webhook specifically
+const validateRazorpayWebhook = async (req, res, next) => {
+  try {
+    const signature = req.headers["x-razorpay-signature"];
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+
+    if (!signature) {
+      return res.status(400).json({ error: "Missing signature" });
+    }
+
+    if (!webhookSecret) {
+      console.error("RAZORPAY_WEBHOOK_SECRET not configured");
+      return res.status(500).json({ error: "Webhook secret not configured" });
+    }
+
+    const crypto = require("crypto");
+    const body = JSON.stringify(req.body);
+    const expectedSignature = crypto
+      .createHmac("sha256", webhookSecret)
+      .update(body)
+      .digest("hex");
+
+    if (expectedSignature !== signature) {
+      return res.status(401).json({ error: "Invalid signature" });
+    }
+
+    // Add IP and user agent for logging
+    req.webhookIp = req.ip || req.connection.remoteAddress;
+    req.webhookUserAgent = req.headers["user-agent"];
+
+    next();
+  } catch (error) {
+    console.error("Razorpay webhook validation error:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+module.exports = {
+  validateWebhook,
+  validateRazorpayWebhook,
+};
+==================== src/utils/webhookValidator.js ====================
+const crypto = require("crypto");
+
+class WebhookValidator {
+  // Validate Razorpay webhook signature
+  static validateRazorpaySignature(payload, signature, secret) {
+    try {
+      if (!secret) {
+        throw new Error("Webhook secret is required");
+      }
+
+      const body = JSON.stringify(payload);
+      const expectedSignature = crypto
+        .createHmac("sha256", secret)
+        .update(body)
+        .digest("hex");
+
+      return expectedSignature === signature;
+    } catch (error) {
+      console.error("Razorpay signature validation error:", error);
+      return false;
+    }
+  }
+
+  // Validate webhook payload structure
+  static validateWebhookPayload(payload, gateway) {
+    try {
+      if (!payload || typeof payload !== "object") {
+        return { valid: false, error: "Invalid payload structure" };
+      }
+
+      switch (gateway) {
+        case "razorpay":
+          return this.validateRazorpayPayload(payload);
+        default:
+          return { valid: false, error: `Unsupported gateway: ${gateway}` };
+      }
+    } catch (error) {
+      return { valid: false, error: error.message };
+    }
+  }
+
+  // Validate Razorpay payload
+  static validateRazorpayPayload(payload) {
+    if (!payload.event) {
+      return { valid: false, error: "Missing event field" };
+    }
+
+    if (!payload.payload) {
+      return { valid: false, error: "Missing payload field" };
+    }
+
+    // Check if event contains required data
+    const eventType = payload.event;
+    const eventPayload = payload.payload;
+
+    switch (eventType) {
+      case "payment.captured":
+        if (!eventPayload.payment) {
+          return {
+            valid: false,
+            error: "Missing payment data for payment.captured event",
+          };
+        }
+        break;
+      case "payment.failed":
+        if (!eventPayload.payment) {
+          return {
+            valid: false,
+            error: "Missing payment data for payment.failed event",
+          };
+        }
+        break;
+      case "order.paid":
+        if (!eventPayload.order || !eventPayload.payment) {
+          return {
+            valid: false,
+            error: "Missing order/payment data for order.paid event",
+          };
+        }
+        break;
+      case "refund.created":
+      case "refund.processed":
+        if (!eventPayload.refund) {
+          return {
+            valid: false,
+            error: `Missing refund data for ${eventType} event`,
+          };
+        }
+        break;
+      default:
+    }
+
+    return { valid: true };
+  }
+
+  // Sanitize webhook data
+  static sanitizeWebhookData(payload) {
+    try {
+      // Remove sensitive data
+      const sanitized = { ...payload };
+
+      if (sanitized.payload?.payment?.card) {
+        sanitized.payload.payment.card = "****";
+      }
+
+      return sanitized;
+    } catch (error) {
+      console.error("Sanitization error:", error);
+      return payload;
+    }
+  }
+
+  // Extract webhook metadata
+  static extractWebhookMetadata(req) {
+    return {
+      ipAddress: req.ip || req.connection?.remoteAddress || "unknown",
+      userAgent: req.headers["user-agent"] || "unknown",
+      timestamp: new Date().toISOString(),
+      method: req.method,
+      url: req.url,
+      headers: {
+        "content-type": req.headers["content-type"],
+        "content-length": req.headers["content-length"],
+        "user-agent": req.headers["user-agent"],
+      },
+    };
+  }
+}
+
+module.exports = WebhookValidator;
+==================== src/models/Payment.js ====================
+const db = require("../config/db");
+
+class Payment {
+  static async create(paymentData) {
+    const {
+      order_id,
+      user_id,
+      gateway,
+      amount,
+      currency = "INR",
+      payment_method,
+      gateway_order_id,
+      status = "pending",
+    } = paymentData;
+
+    const [result] = await db.execute(
+      `INSERT INTO payments 
+       (order_id, user_id, gateway, amount, currency, payment_method, gateway_order_id, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        order_id,
+        user_id,
+        gateway,
+        amount,
+        currency,
+        payment_method,
+        gateway_order_id,
+        status,
+      ],
+    );
+
+    return result.insertId;
+  }
+
+  static async findById(id) {
+    const [rows] = await db.execute("SELECT * FROM payments WHERE id = ?", [
+      id,
+    ]);
+    return rows[0];
+  }
+
+  static async findByOrderId(orderId) {
+    const [rows] = await db.execute(
+      "SELECT * FROM payments WHERE order_id = ? ORDER BY id DESC",
+      [orderId],
+    );
+    return rows;
+  }
+
+  static async findByGatewayOrderId(gatewayOrderId) {
+    const [rows] = await db.execute(
+      "SELECT * FROM payments WHERE gateway_order_id = ?",
+      [gatewayOrderId],
+    );
+    return rows[0];
+  }
+
+  static async update(id, updates) {
+    const fields = [];
+    const values = [];
+
+    if (updates.status) {
+      fields.push("status = ?");
+      values.push(updates.status);
+    }
+    if (updates.gateway_payment_id) {
+      fields.push("gateway_payment_id = ?");
+      values.push(updates.gateway_payment_id);
+    }
+    if (updates.gateway_signature) {
+      fields.push("gateway_signature = ?");
+      values.push(updates.gateway_signature);
+    }
+    if (updates.gateway_response) {
+      fields.push("gateway_response = ?");
+      values.push(JSON.stringify(updates.gateway_response));
+    }
+    if (updates.status === "paid") {
+      fields.push("paid_at = NOW()");
+    }
+
+    if (fields.length === 0) return;
+
+    values.push(id);
+    const query = `UPDATE payments SET ${fields.join(", ")} WHERE id = ?`;
+    await db.execute(query, values);
+  }
+
+  static async findByUserId(userId) {
+    const [rows] = await db.execute(
+      `SELECT p.*, o.order_number, o.total as order_total 
+       FROM payments p 
+       LEFT JOIN orders o ON p.order_id = o.id 
+       WHERE p.user_id = ? 
+       ORDER BY p.created_at DESC`,
+      [userId],
+    );
+    return rows;
+  }
+
+  static async getPaymentStats() {
+    const [rows] = await db.execute(
+      `SELECT 
+         COUNT(*) as total_payments,
+         SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) as total_revenue,
+         COUNT(CASE WHEN status = 'paid' THEN 1 END) as successful_payments,
+         COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_payments,
+         COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_payments,
+         AVG(CASE WHEN status = 'paid' THEN amount ELSE NULL END) as avg_payment_amount
+       FROM payments`,
+    );
+    return rows[0];
+  }
+}
+
+module.exports = Payment;
+==================== src/models/Transaction.js ====================
+const db = require("../config/db");
+
+class Transaction {
+  static async create(transactionData) {
+    const {
+      payment_id,
+      gateway,
+      gateway_transaction_id,
+      type,
+      amount,
+      currency = "INR",
+      status,
+      response_data,
+    } = transactionData;
+
+    const [result] = await db.execute(
+      `INSERT INTO transactions 
+       (payment_id, gateway, gateway_transaction_id, type, amount, currency, status, response_data) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        payment_id,
+        gateway,
+        gateway_transaction_id,
+        type,
+        amount,
+        currency,
+        status,
+        JSON.stringify(response_data),
+      ],
+    );
+
+    return result.insertId;
+  }
+
+  static async findById(id) {
+    const [rows] = await db.execute("SELECT * FROM transactions WHERE id = ?", [
+      id,
+    ]);
+    return rows[0];
+  }
+
+  static async findByPaymentId(paymentId) {
+    const [rows] = await db.execute(
+      "SELECT * FROM transactions WHERE payment_id = ? ORDER BY created_at DESC",
+      [paymentId],
+    );
+    return rows;
+  }
+
+  static async findByGatewayTransactionId(gatewayTransactionId) {
+    const [rows] = await db.execute(
+      "SELECT * FROM transactions WHERE gateway_transaction_id = ?",
+      [gatewayTransactionId],
+    );
+    return rows[0];
+  }
+
+  static async update(id, updates) {
+    const fields = [];
+    const values = [];
+
+    if (updates.status) {
+      fields.push("status = ?");
+      values.push(updates.status);
+    }
+    if (updates.response_data) {
+      fields.push("response_data = ?");
+      values.push(JSON.stringify(updates.response_data));
+    }
+    if (updates.error_message) {
+      fields.push("error_message = ?");
+      values.push(updates.error_message);
+    }
+
+    if (fields.length === 0) return;
+
+    values.push(id);
+    const query = `UPDATE transactions SET ${fields.join(", ")} WHERE id = ?`;
+    await db.execute(query, values);
+  }
+
+  static async getTransactionStats() {
+    const [rows] = await db.execute(
+      `SELECT 
+         COUNT(*) as total_transactions,
+         COUNT(CASE WHEN status = 'success' THEN 1 END) as successful,
+         COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed,
+         COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+         SUM(CASE WHEN status = 'success' THEN amount ELSE 0 END) as total_amount
+       FROM transactions`,
+    );
+    return rows[0];
+  }
+}
+
+module.exports = Transaction;
+==================== MISSING: src/components/payment/RazorpayPayment.tsx ====================
+==================== MISSING: src/features/payment/utils/razorpayLoader.ts ====================
+==================== MISSING: src/features/payment/hooks/usePayment.ts ====================
+==================== MISSING: src/store/api/paymentApi.ts ====================
+==================== MISSING: src/store/slices/payment.ts ====================

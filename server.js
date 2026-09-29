@@ -20,7 +20,7 @@ app.use('/public', express.static('public'));
 
 // Basic Route
 app.get('/', (req, res) => {
-    res.json({ message: 'Welcome to Decor Vault Backend API' });
+    res.json({ message:  'Welcome to Decor Vault Backend API' });
 });
 
 // Unauthorized endpoint

@@ -1,5 +1,7 @@
 const db = require("../config/db");
 
+/* ============================== CREATE ============================== */
+
 const createCoupon = async (req, res) => {
   try {
     const {
@@ -58,8 +60,10 @@ const createCoupon = async (req, res) => {
         type,
         value,
         minimum_amount || 0,
-        maximum_discount || null,
-        usage_limit || null,
+        // 0 or null → NULL (means "no max discount")
+        maximum_discount && maximum_discount > 0 ? maximum_discount : null,
+        // 0 or null → NULL (means "unlimited usage")
+        usage_limit && usage_limit > 0 ? usage_limit : null,
         user_limit || 1,
         applicable_to || "all",
         applicable_ids ? JSON.stringify(applicable_ids) : null,
@@ -75,7 +79,7 @@ const createCoupon = async (req, res) => {
     res.status(201).json({
       success: true,
       message: "Coupon created successfully",
-      data: newCoupon[0],
+      data: normalizeCoupon(newCoupon[0]),
     });
   } catch (error) {
     console.error("Error creating coupon:", error);
@@ -100,43 +104,35 @@ const createCoupon = async (req, res) => {
   }
 };
 
+/* ============================ READ ALL ============================ */
+
 const getAllCoupons = async (req, res) => {
   try {
     // Check if table exists
     try {
       const [tableCheck] = await db.execute('SHOW TABLES LIKE "coupons"');
       if (tableCheck.length === 0) {
-        // Return empty data if table doesn't exist
         return res.status(200).json({
           success: true,
           message: "No coupons found",
           data: [],
-          pagination: {
-            total: 0,
-            page: 1,
-            limit: 10,
-            totalPages: 0,
-          },
+          pagination: { total: 0, page: 1, limit: 10, totalPages: 0 },
         });
       }
     } catch (tableError) {
       console.error("Table check failed:", tableError);
-      // Return empty data
       return res.status(200).json({
         success: true,
         message: "No coupons found",
         data: [],
-        pagination: {
-          total: 0,
-          page: 1,
-          limit: 10,
-          totalPages: 0,
-        },
+        pagination: { total: 0, page: 1, limit: 10, totalPages: 0 },
       });
     }
 
-    const { status, type, page = 1, limit = 100 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const { status, type } = req.query;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, Math.min(500, parseInt(req.query.limit) || 100));
+    const offset = (page - 1) * limit;
 
     let whereClause = "";
     const params = [];
@@ -151,52 +147,52 @@ const getAllCoupons = async (req, res) => {
       params.push(type);
     }
 
+    // ✅ FIX: LIMIT/OFFSET must be interpolated, not parameterized.
+    // MySQL2's prepared statements silently return 0 rows when ? is used
+    // inside LIMIT / OFFSET on many MySQL server versions.
     const query = `
-      SELECT *, 
-        CASE 
+      SELECT *,
+        CASE
           WHEN end_date < NOW() THEN 'expired'
-          ELSE status 
+          ELSE status
         END as current_status
-      FROM coupons${whereClause} 
-      ORDER BY created_at DESC 
-      LIMIT ? OFFSET ?
+      FROM coupons${whereClause}
+      ORDER BY created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
     `;
     const countQuery = `SELECT COUNT(*) as total FROM coupons${whereClause}`;
 
-    const [rows] = await db.execute(query, [
-      ...params,
-      parseInt(limit),
-      offset,
-    ]);
+    console.log("[getAllCoupons] SQL:", query.trim());
+    console.log("[getAllCoupons] params:", params);
+
+    const [rows] = await db.execute(query, params);
     const [countResult] = await db.execute(countQuery, params);
+
+    console.log("[getAllCoupons] rows returned:", rows.length);
 
     res.status(200).json({
       success: true,
       message: "Coupons retrieved successfully",
-      data: rows || [],
+      data: (rows || []).map(normalizeCoupon),
       pagination: {
         total: countResult[0]?.total || 0,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        totalPages: Math.ceil((countResult[0]?.total || 0) / parseInt(limit)),
+        page,
+        limit,
+        totalPages: Math.ceil((countResult[0]?.total || 0) / limit),
       },
     });
   } catch (error) {
     console.error("Error fetching coupons:", error);
-    // Return empty data instead of error
     res.status(200).json({
       success: true,
       message: "No coupons found",
       data: [],
-      pagination: {
-        total: 0,
-        page: 1,
-        limit: 10,
-        totalPages: 0,
-      },
+      pagination: { total: 0, page: 1, limit: 10, totalPages: 0 },
     });
   }
 };
+
+/* ============================ READ ONE ============================ */
 
 const getCouponById = async (req, res) => {
   try {
@@ -213,7 +209,7 @@ const getCouponById = async (req, res) => {
     res.status(200).json({
       success: true,
       message: "Coupon retrieved successfully",
-      data: rows[0],
+      data: normalizeCoupon(rows[0]),
     });
   } catch (error) {
     console.error("Error fetching coupon:", error);
@@ -224,6 +220,8 @@ const getCouponById = async (req, res) => {
     });
   }
 };
+
+/* ============================== UPDATE ============================== */
 
 const updateCoupon = async (req, res) => {
   try {
@@ -255,36 +253,45 @@ const updateCoupon = async (req, res) => {
       });
     }
 
-    const [result] = await db.execute(
+    const current = existing[0];
+
+    await db.execute(
       `
-      UPDATE coupons SET 
-        code = ?, name = ?, description = ?, type = ?, value = ?, 
-        minimum_amount = ?, maximum_discount = ?, usage_limit = ?, 
-        user_limit = ?, applicable_to = ?, applicable_ids = ?, 
+      UPDATE coupons SET
+        code = ?, name = ?, description = ?, type = ?, value = ?,
+        minimum_amount = ?, maximum_discount = ?, usage_limit = ?,
+        user_limit = ?, applicable_to = ?, applicable_ids = ?,
         start_date = ?, end_date = ?, status = ?
       WHERE id = ?
     `,
       [
-        code?.toUpperCase() || existing[0].code,
-        name || existing[0].name,
-        description || existing[0].description,
-        type || existing[0].type,
-        value || existing[0].value,
+        code?.toUpperCase() || current.code,
+        name || current.name,
+        description !== undefined ? description : current.description,
+        type || current.type,
+        value !== undefined ? value : current.value,
         minimum_amount !== undefined
           ? minimum_amount
-          : existing[0].minimum_amount,
-        maximum_discount !== undefined
-          ? maximum_discount
-          : existing[0].maximum_discount,
-        usage_limit !== undefined ? usage_limit : existing[0].usage_limit,
-        user_limit || existing[0].user_limit,
-        applicable_to || existing[0].applicable_to,
+          : current.minimum_amount,
+        // 0 or null → NULL
+        maximum_discount !== undefined && maximum_discount !== null
+          ? maximum_discount > 0
+            ? maximum_discount
+            : null
+          : current.maximum_discount,
+        usage_limit !== undefined && usage_limit !== null
+          ? usage_limit > 0
+            ? usage_limit
+            : null
+          : current.usage_limit,
+        user_limit || current.user_limit,
+        applicable_to || current.applicable_to,
         applicable_ids
           ? JSON.stringify(applicable_ids)
-          : existing[0].applicable_ids,
-        start_date || existing[0].start_date,
-        end_date || existing[0].end_date,
-        status || existing[0].status,
+          : current.applicable_ids,
+        start_date || current.start_date,
+        end_date || current.end_date,
+        status || current.status,
         id,
       ],
     );
@@ -297,7 +304,7 @@ const updateCoupon = async (req, res) => {
     res.status(200).json({
       success: true,
       message: "Coupon updated successfully",
-      data: updatedCoupon[0],
+      data: normalizeCoupon(updatedCoupon[0]),
     });
   } catch (error) {
     console.error("Error updating coupon:", error);
@@ -315,6 +322,8 @@ const updateCoupon = async (req, res) => {
   }
 };
 
+/* ============================== DELETE ============================== */
+
 const deleteCoupon = async (req, res) => {
   try {
     const { id } = req.params;
@@ -329,12 +338,14 @@ const deleteCoupon = async (req, res) => {
       });
     }
 
-    // Try to delete usage records if table exists
+    // Cascade-delete usage rows first (if table exists)
     try {
       await db.execute("DELETE FROM coupon_usage WHERE coupon_id = ?", [id]);
-    } catch (usageError) {}
+    } catch (usageError) {
+      console.warn("coupon_usage cleanup skipped:", usageError.message);
+    }
 
-    const [result] = await db.execute("DELETE FROM coupons WHERE id = ?", [id]);
+    await db.execute("DELETE FROM coupons WHERE id = ?", [id]);
 
     res.status(200).json({
       success: true,
@@ -350,6 +361,8 @@ const deleteCoupon = async (req, res) => {
   }
 };
 
+/* ============================= VALIDATE ============================= */
+
 const validateCoupon = async (req, res) => {
   try {
     const { code, cart_total, user_id } = req.body;
@@ -361,9 +374,11 @@ const validateCoupon = async (req, res) => {
       });
     }
 
+    const cartTotal = Number(cart_total) || 0;
+
     const [couponRows] = await db.execute(
       `
-      SELECT * FROM coupons 
+      SELECT * FROM coupons
       WHERE code = ? AND status = 'active' AND start_date <= NOW() AND end_date >= NOW()
     `,
       [code.toUpperCase()],
@@ -378,6 +393,7 @@ const validateCoupon = async (req, res) => {
 
     const coupon = couponRows[0];
 
+    // usage_limit stored as NULL = unlimited
     if (coupon.usage_limit && coupon.used_count >= coupon.usage_limit) {
       return res.status(400).json({
         success: false,
@@ -398,10 +414,12 @@ const validateCoupon = async (req, res) => {
             message: "You have already used this coupon",
           });
         }
-      } catch (usageError) {}
+      } catch (usageError) {
+        console.warn("user-limit check skipped:", usageError.message);
+      }
     }
 
-    if (cart_total < coupon.minimum_amount) {
+    if (cartTotal < coupon.minimum_amount) {
       return res.status(400).json({
         success: false,
         message: `Minimum order amount of ₹${coupon.minimum_amount} required`,
@@ -410,7 +428,7 @@ const validateCoupon = async (req, res) => {
 
     let discount = 0;
     if (coupon.type === "percentage") {
-      discount = (cart_total * coupon.value) / 100;
+      discount = (cartTotal * coupon.value) / 100;
       if (coupon.maximum_discount && discount > coupon.maximum_discount) {
         discount = coupon.maximum_discount;
       }
@@ -420,6 +438,12 @@ const validateCoupon = async (req, res) => {
       discount = coupon.value || 0;
     }
 
+    // Never discount more than the cart total
+    if (discount > cartTotal) discount = cartTotal;
+
+    // Round to 2 decimals
+    discount = Math.round(discount * 100) / 100;
+
     res.status(200).json({
       success: true,
       message: "Coupon is valid",
@@ -428,7 +452,7 @@ const validateCoupon = async (req, res) => {
         code: coupon.code,
         type: coupon.type,
         discount_amount: discount,
-        coupon_details: coupon,
+        coupon_details: normalizeCoupon(coupon),
       },
     });
   } catch (error) {
@@ -440,6 +464,8 @@ const validateCoupon = async (req, res) => {
     });
   }
 };
+
+/* ============================== APPLY ============================== */
 
 const applyCoupon = async (req, res) => {
   try {
@@ -460,7 +486,16 @@ const applyCoupon = async (req, res) => {
       `,
         [coupon_id, user_id, order_id, discount_amount || 0],
       );
-    } catch (usageError) {}
+    } catch (usageError) {
+      // Only swallow missing-table; anything else is a real failure
+      if (usageError.code === "ER_NO_SUCH_TABLE") {
+        console.warn(
+          "coupon_usage table missing — usage row not recorded, only counter incremented",
+        );
+      } else {
+        throw usageError;
+      }
+    }
 
     await db.execute(
       "UPDATE coupons SET used_count = used_count + 1 WHERE id = ?",
@@ -481,9 +516,10 @@ const applyCoupon = async (req, res) => {
   }
 };
 
+/* ============================== STATS ============================== */
+
 const getCouponStats = async (req, res) => {
   try {
-    // Check if table exists
     let totalCoupons = 0,
       activeCoupons = 0,
       expiredCoupons = 0;
@@ -507,7 +543,9 @@ const getCouponStats = async (req, res) => {
         activeCoupons = activeResult[0]?.count || 0;
         expiredCoupons = expiredResult[0]?.count || 0;
       }
-    } catch (tableError) {}
+    } catch (tableError) {
+      console.warn("coupons table check failed:", tableError.message);
+    }
 
     try {
       const [tableCheck] = await db.execute('SHOW TABLES LIKE "coupon_usage"');
@@ -519,9 +557,11 @@ const getCouponStats = async (req, res) => {
           "SELECT SUM(discount_amount) as total FROM coupon_usage",
         );
         totalUsage = usageResult[0]?.count || 0;
-        totalDiscountGiven = discountResult[0]?.total || 0;
+        totalDiscountGiven = Number(discountResult[0]?.total) || 0;
       }
-    } catch (usageError) {}
+    } catch (usageError) {
+      console.warn("coupon_usage table check failed:", usageError.message);
+    }
 
     res.status(200).json({
       success: true,
@@ -549,6 +589,52 @@ const getCouponStats = async (req, res) => {
     });
   }
 };
+
+/* ============================ HELPERS ============================ */
+
+/**
+ * Normalize a raw MySQL coupon row:
+ *  - DECIMAL columns → Number
+ *  - JSON columns → parsed array/object
+ *  - Handles MySQL2 returning Buffer for JSON columns
+ */
+function normalizeCoupon(row) {
+  if (!row) return row;
+
+  let applicableIds = row.applicable_ids;
+  if (applicableIds) {
+    try {
+      if (Buffer.isBuffer(applicableIds)) {
+        applicableIds = JSON.parse(applicableIds.toString());
+      } else if (typeof applicableIds === "string") {
+        applicableIds = JSON.parse(applicableIds);
+      }
+    } catch (e) {
+      applicableIds = [];
+    }
+  } else {
+    applicableIds = [];
+  }
+
+  return {
+    ...row,
+    value: Number(row.value),
+    minimum_amount: Number(row.minimum_amount),
+    maximum_discount:
+      row.maximum_discount !== null && row.maximum_discount !== undefined
+        ? Number(row.maximum_discount)
+        : null,
+    usage_limit:
+      row.usage_limit !== null && row.usage_limit !== undefined
+        ? Number(row.usage_limit)
+        : null,
+    used_count: Number(row.used_count),
+    user_limit: Number(row.user_limit),
+    applicable_ids: applicableIds,
+  };
+}
+
+/* ============================= EXPORTS ============================= */
 
 module.exports = {
   createCoupon,
