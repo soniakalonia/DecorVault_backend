@@ -14,8 +14,42 @@ exports.initiatePayment = async (req, res) => {
     } = req.body;
     const userId = req.user.id;
 
-    // Validate amount
-    const amountValidation = validateAmount(amount);
+    // ─── 1. Load order and use SERVER total (never trust client) ───
+    const [orders] = await db.execute(
+      "SELECT id, user_id, total, payment_status FROM orders WHERE id = ?",
+      [orderId],
+    );
+    if (orders.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
+    }
+
+    const order = orders[0];
+
+    if (order.user_id !== userId) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Not authorized for this order" });
+    }
+
+    if (order.payment_status === "paid") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Order already paid" });
+    }
+
+    // Use the order's stored total — server-computed at createOrder time
+    const serverAmount = Number(order.total);
+
+    // Client may send a mismatched amount; warn but use server value
+    if (Number(amount) !== serverAmount) {
+      console.warn(
+        `[payment] Amount mismatch order=${orderId} client=${amount} server=${serverAmount} — using server value`,
+      );
+    }
+
+    const amountValidation = validateAmount(serverAmount);
     if (!amountValidation.valid) {
       return res
         .status(400)
@@ -35,11 +69,11 @@ exports.initiatePayment = async (req, res) => {
 
     const user = users[0];
 
-    // Initialize payment
+    // Initialize payment with SERVER amount
     const result = await PaymentService.initializePayment({
       orderId,
       userId,
-      amount,
+      amount: serverAmount,
       paymentMethod,
       currency,
       userEmail: user.email,
@@ -172,8 +206,6 @@ exports.refundPayment = async (req, res) => {
 // Handle webhook
 exports.handleWebhook = async (req, res) => {
   try {
-    // The webhook middleware already processed the webhook
-    // and attached the result to req.webhookResult
     const result = req.webhookResult;
 
     if (!result || !result.success) {

@@ -203,8 +203,14 @@ class PayUService {
           });
 
           await db.execute(
-            `UPDATE orders SET status = 'confirmed', confirmed_at = NOW() WHERE id = ?`,
-            [paymentRecord.order_id],
+            `UPDATE orders 
+             SET status = 'confirmed',
+                 confirmed_at = NOW(),
+                 payment_status = 'paid',
+                 payment_id = ?,
+                 paid_at = NOW()
+             WHERE id = ?`,
+            [mihpayid, paymentRecord.order_id],
           );
         }
 
@@ -344,8 +350,14 @@ class PayUService {
           });
 
           await db.execute(
-            `UPDATE orders SET status = 'confirmed', confirmed_at = NOW() WHERE id = ?`,
-            [paymentRecord.order_id],
+            `UPDATE orders 
+             SET status = 'confirmed',
+                 confirmed_at = NOW(),
+                 payment_status = 'paid',
+                 payment_id = ?,
+                 paid_at = NOW()
+             WHERE id = ?`,
+            [mihpayid, paymentRecord.order_id],
           );
         }
 
@@ -418,3 +430,5 @@ class PayUService {
 }
 
 module.exports = PayUService;
+
+

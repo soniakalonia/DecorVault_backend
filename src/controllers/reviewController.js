@@ -30,13 +30,11 @@ exports.createReview = async (req, res) => {
       ],
     );
 
-    res
-      .status(201)
-      .json({
-        message: "Review created successfully",
-        reviewId: result.insertId,
-        status,
-      });
+    res.status(201).json({
+      message: "Review created successfully",
+      reviewId: result.insertId,
+      status,
+    });
   } catch (error) {
     console.error("Error creating review:", error);
     res
@@ -51,11 +49,11 @@ exports.getProductReviews = async (req, res) => {
 
     const [reviews] = await db.query(
       `SELECT r.*, u.full_name as user_name 
- FROM reviews r 
- LEFT JOIN users u ON r.user_id = u.id 
- WHERE r.product_id = ?
- ORDER BY r.created_at DESC`
-      [productId],
+       FROM reviews r 
+       LEFT JOIN users u ON r.user_id = u.id 
+       WHERE r.product_id = ?
+       ORDER BY r.created_at DESC`,
+      [productId],   // ✅ COMMA add kiya — yahi bug tha
     );
 
     res.json({ data: reviews });

@@ -235,10 +235,17 @@ class RazorpayService {
     });
 
     // Update order status
+    // Update order status + payment status
     const db = require("../config/db");
     await db.execute(
-      `UPDATE orders SET status = 'confirmed', confirmed_at = NOW() WHERE id = ?`,
-      [paymentRecord.order_id],
+      `UPDATE orders 
+       SET status = 'confirmed',
+           confirmed_at = NOW(),
+           payment_status = 'paid',
+           payment_id = ?,
+           paid_at = NOW()
+       WHERE id = ?`,
+      [payment.id, paymentRecord.order_id],
     );
     return { success: true, message: "Payment captured and processed" };
   }
